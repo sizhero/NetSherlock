@@ -1,0 +1,613 @@
+#!/usr/bin/env python3
+"""
+生成网络流量特征描述CSV文件
+"""
+
+import csv
+import re
+
+# 定义所有特征及其描述
+features = []
+
+# ========== 统计特征 (StatisticalFeatureExtractor) ==========
+statistical_features = [
+    # 基础流统计
+    ('flow_duration', 'float', '流持续时间', '最后一个包与第一个包的时间差（秒）', '单位：秒，最小值0.000001'),
+    ('total_packets', 'int', '总数据包数', '流中所有数据包的总数', ''),
+    ('fwd_packets', 'int', '前向数据包数', '从源到目标的数据包数量', ''),
+    ('bwd_packets', 'int', '后向数据包数', '从目标到源的数据包数量', ''),
+    ('total_bytes', 'int', '总字节数', '流中所有数据包的总字节数', ''),
+    ('fwd_bytes', 'int', '前向字节数', '前向数据包的总字节数', ''),
+    ('bwd_bytes', 'int', '后向字节数', '后向数据包的总字节数', ''),
+    ('fwd_bwd_packet_ratio', 'float', '前后向包数比', '前向包数/后向包数', '后向包数为0时为inf'),
+    ('fwd_bwd_byte_ratio', 'float', '前后向字节比', '前向字节数/后向字节数', '后向字节数为0时为inf'),
+    ('avg_packet_length', 'float', '平均包长', '总字节数/总包数', '单位：字节'),
+    ('fwd_avg_packet_length', 'float', '前向平均包长', '前向字节数/前向包数', '单位：字节'),
+    ('bwd_avg_packet_length', 'float', '后向平均包长', '后向字节数/后向包数', '单位：字节'),
+    
+    # 包长统计量（前向和后向各9个统计量）
+    ('fwd_packet_length_mean', 'float', '前向包长均值', '前向包长的平均值', ''),
+    ('fwd_packet_length_std', 'float', '前向包长标准差', '前向包长的标准差', ''),
+    ('fwd_packet_length_min', 'float', '前向包长最小值', '前向包长的最小值', ''),
+    ('fwd_packet_length_max', 'float', '前向包长最大值', '前向包长的最大值', ''),
+    ('fwd_packet_length_median', 'float', '前向包长中位数', '前向包长的中位数', ''),
+    ('fwd_packet_length_q1', 'float', '前向包长第一四分位数', '前向包长的25%分位数', ''),
+    ('fwd_packet_length_q3', 'float', '前向包长第三四分位数', '前向包长的75%分位数', ''),
+    ('fwd_packet_length_skew', 'float', '前向包长偏度', '前向包长的偏度系数', ''),
+    ('fwd_packet_length_kurt', 'float', '前向包长峰度', '前向包长的峰度系数', ''),
+    ('bwd_packet_length_mean', 'float', '后向包长均值', '后向包长的平均值', ''),
+    ('bwd_packet_length_std', 'float', '后向包长标准差', '后向包长的标准差', ''),
+    ('bwd_packet_length_min', 'float', '后向包长最小值', '后向包长的最小值', ''),
+    ('bwd_packet_length_max', 'float', '后向包长最大值', '后向包长的最大值', ''),
+    ('bwd_packet_length_median', 'float', '后向包长中位数', '后向包长的中位数', ''),
+    ('bwd_packet_length_q1', 'float', '后向包长第一四分位数', '后向包长的25%分位数', ''),
+    ('bwd_packet_length_q3', 'float', '后向包长第三四分位数', '后向包长的75%分位数', ''),
+    ('bwd_packet_length_skew', 'float', '后向包长偏度', '后向包长的偏度系数', ''),
+    ('bwd_packet_length_kurt', 'float', '后向包长峰度', '后向包长的峰度系数', ''),
+    ('fwd_packet_length_cv', 'float', '前向包长变异系数', '前向包长标准差/均值', ''),
+    ('bwd_packet_length_cv', 'float', '后向包长变异系数', '后向包长标准差/均值', ''),
+    
+    # 有效载荷统计
+    ('fwd_total_payload', 'int', '前向总载荷', '前向数据包载荷总字节数', ''),
+    ('bwd_total_payload', 'int', '后向总载荷', '后向数据包载荷总字节数', ''),
+    ('fwd_payload_mean', 'float', '前向载荷均值', '前向载荷的平均值', ''),
+    ('fwd_payload_std', 'float', '前向载荷标准差', '前向载荷的标准差', ''),
+    ('fwd_payload_min', 'float', '前向载荷最小值', '前向载荷的最小值', ''),
+    ('fwd_payload_max', 'float', '前向载荷最大值', '前向载荷的最大值', ''),
+    ('fwd_payload_median', 'float', '前向载荷中位数', '前向载荷的中位数', ''),
+    ('fwd_payload_q1', 'float', '前向载荷第一四分位数', '前向载荷的25%分位数', ''),
+    ('fwd_payload_q3', 'float', '前向载荷第三四分位数', '前向载荷的75%分位数', ''),
+    ('fwd_payload_skew', 'float', '前向载荷偏度', '前向载荷的偏度系数', ''),
+    ('fwd_payload_kurt', 'float', '前向载荷峰度', '前向载荷的峰度系数', ''),
+    ('bwd_payload_mean', 'float', '后向载荷均值', '后向载荷的平均值', ''),
+    ('bwd_payload_std', 'float', '后向载荷标准差', '后向载荷的标准差', ''),
+    ('bwd_payload_min', 'float', '后向载荷最小值', '后向载荷的最小值', ''),
+    ('bwd_payload_max', 'float', '后向载荷最大值', '后向载荷的最大值', ''),
+    ('bwd_payload_median', 'float', '后向载荷中位数', '后向载荷的中位数', ''),
+    ('bwd_payload_q1', 'float', '后向载荷第一四分位数', '后向载荷的25%分位数', ''),
+    ('bwd_payload_q3', 'float', '后向载荷第三四分位数', '后向载荷的75%分位数', ''),
+    ('bwd_payload_skew', 'float', '后向载荷偏度', '后向载荷的偏度系数', ''),
+    ('bwd_payload_kurt', 'float', '后向载荷峰度', '后向载荷的峰度系数', ''),
+    ('packets_per_sec', 'float', '每秒包数', '总包数/流持续时间', ''),
+    ('bytes_per_sec', 'float', '每秒字节数', '总字节数/流持续时间', ''),
+    
+    # 时间间隔统计
+    ('iat_mean', 'float', '时间间隔均值', '相邻数据包时间间隔的平均值', '单位：秒'),
+    ('iat_std', 'float', '时间间隔标准差', '相邻数据包时间间隔的标准差', '单位：秒'),
+    ('iat_min', 'float', '时间间隔最小值', '相邻数据包时间间隔的最小值', '单位：秒'),
+    ('iat_max', 'float', '时间间隔最大值', '相邻数据包时间间隔的最大值', '单位：秒'),
+    ('iat_median', 'float', '时间间隔中位数', '相邻数据包时间间隔的中位数', '单位：秒'),
+    ('iat_q1', 'float', '时间间隔第一四分位数', '相邻数据包时间间隔的25%分位数', '单位：秒'),
+    ('iat_q3', 'float', '时间间隔第三四分位数', '相邻数据包时间间隔的75%分位数', '单位：秒'),
+    ('iat_skew', 'float', '时间间隔偏度', '相邻数据包时间间隔的偏度系数', ''),
+    ('iat_kurt', 'float', '时间间隔峰度', '相邻数据包时间间隔的峰度系数', ''),
+    ('fwd_iat_mean', 'float', '前向时间间隔均值', '前向相邻数据包时间间隔的平均值', '单位：秒'),
+    ('fwd_iat_std', 'float', '前向时间间隔标准差', '前向相邻数据包时间间隔的标准差', '单位：秒'),
+    ('fwd_iat_min', 'float', '前向时间间隔最小值', '前向相邻数据包时间间隔的最小值', '单位：秒'),
+    ('fwd_iat_max', 'float', '前向时间间隔最大值', '前向相邻数据包时间间隔的最大值', '单位：秒'),
+    ('fwd_iat_median', 'float', '前向时间间隔中位数', '前向相邻数据包时间间隔的中位数', '单位：秒'),
+    ('fwd_iat_q1', 'float', '前向时间间隔第一四分位数', '前向相邻数据包时间间隔的25%分位数', '单位：秒'),
+    ('fwd_iat_q3', 'float', '前向时间间隔第三四分位数', '前向相邻数据包时间间隔的75%分位数', '单位：秒'),
+    ('fwd_iat_skew', 'float', '前向时间间隔偏度', '前向相邻数据包时间间隔的偏度系数', ''),
+    ('fwd_iat_kurt', 'float', '前向时间间隔峰度', '前向相邻数据包时间间隔的峰度系数', ''),
+    ('bwd_iat_mean', 'float', '后向时间间隔均值', '后向相邻数据包时间间隔的平均值', '单位：秒'),
+    ('bwd_iat_std', 'float', '后向时间间隔标准差', '后向相邻数据包时间间隔的标准差', '单位：秒'),
+    ('bwd_iat_min', 'float', '后向时间间隔最小值', '后向相邻数据包时间间隔的最小值', '单位：秒'),
+    ('bwd_iat_max', 'float', '后向时间间隔最大值', '后向相邻数据包时间间隔的最大值', '单位：秒'),
+    ('bwd_iat_median', 'float', '后向时间间隔中位数', '后向相邻数据包时间间隔的中位数', '单位：秒'),
+    ('bwd_iat_q1', 'float', '后向时间间隔第一四分位数', '后向相邻数据包时间间隔的25%分位数', '单位：秒'),
+    ('bwd_iat_q3', 'float', '后向时间间隔第三四分位数', '后向相邻数据包时间间隔的75%分位数', '单位：秒'),
+    ('bwd_iat_skew', 'float', '后向时间间隔偏度', '后向相邻数据包时间间隔的偏度系数', ''),
+    ('bwd_iat_kurt', 'float', '后向时间间隔峰度', '后向相邻数据包时间间隔的峰度系数', ''),
+    ('fwd_iat_cv', 'float', '前向时间间隔变异系数', '前向时间间隔标准差/均值', ''),
+    ('bwd_iat_cv', 'float', '后向时间间隔变异系数', '后向时间间隔标准差/均值', ''),
+    ('active_time', 'float', '活跃时间', '时间间隔<=1ms的时间总和', '单位：秒'),
+    ('idle_time', 'float', '空闲时间', '时间间隔>1ms的时间总和', '单位：秒'),
+    ('active_time_ratio', 'float', '活跃时间比例', '活跃时间/(活跃时间+空闲时间)', ''),
+    
+    # 窗口统计
+    ('first_10_packets_length_mean', 'float', '前10个包长度均值', '流中前10个数据包长度的平均值', ''),
+    ('first_10_packets_length_std', 'float', '前10个包长度标准差', '流中前10个数据包长度的标准差', ''),
+    ('first_10_packets_length_min', 'float', '前10个包长度最小值', '流中前10个数据包长度的最小值', ''),
+    ('first_10_packets_length_max', 'float', '前10个包长度最大值', '流中前10个数据包长度的最大值', ''),
+    ('first_10_packets_length_median', 'float', '前10个包长度中位数', '流中前10个数据包长度的中位数', ''),
+    ('first_10_packets_length_q1', 'float', '前10个包长度第一四分位数', '流中前10个数据包长度的25%分位数', ''),
+    ('first_10_packets_length_q3', 'float', '前10个包长度第三四分位数', '流中前10个数据包长度的75%分位数', ''),
+    ('first_10_packets_length_skew', 'float', '前10个包长度偏度', '流中前10个数据包长度的偏度系数', ''),
+    ('first_10_packets_length_kurt', 'float', '前10个包长度峰度', '流中前10个数据包长度的峰度系数', ''),
+    ('window_packet_count_mean', 'float', '窗口包数均值', '1秒时间窗口内包数的平均值', ''),
+    ('window_packet_count_std', 'float', '窗口包数标准差', '1秒时间窗口内包数的标准差', ''),
+    ('window_packet_count_min', 'float', '窗口包数最小值', '1秒时间窗口内包数的最小值', ''),
+    ('window_packet_count_max', 'float', '窗口包数最大值', '1秒时间窗口内包数的最大值', ''),
+    ('window_packet_count_median', 'float', '窗口包数中位数', '1秒时间窗口内包数的中位数', ''),
+    ('window_packet_count_q1', 'float', '窗口包数第一四分位数', '1秒时间窗口内包数的25%分位数', ''),
+    ('window_packet_count_q3', 'float', '窗口包数第三四分位数', '1秒时间窗口内包数的75%分位数', ''),
+    ('window_packet_count_skew', 'float', '窗口包数偏度', '1秒时间窗口内包数的偏度系数', ''),
+    ('window_packet_count_kurt', 'float', '窗口包数峰度', '1秒时间窗口内包数的峰度系数', ''),
+    ('window_byte_count_mean', 'float', '窗口字节数均值', '1秒时间窗口内字节数的平均值', ''),
+    ('window_byte_count_std', 'float', '窗口字节数标准差', '1秒时间窗口内字节数的标准差', ''),
+    ('window_byte_count_min', 'float', '窗口字节数最小值', '1秒时间窗口内字节数的最小值', ''),
+    ('window_byte_count_max', 'float', '窗口字节数最大值', '1秒时间窗口内字节数的最大值', ''),
+    ('window_byte_count_median', 'float', '窗口字节数中位数', '1秒时间窗口内字节数的中位数', ''),
+    ('window_byte_count_q1', 'float', '窗口字节数第一四分位数', '1秒时间窗口内字节数的25%分位数', ''),
+    ('window_byte_count_q3', 'float', '窗口字节数第三四分位数', '1秒时间窗口内字节数的75%分位数', ''),
+    ('window_byte_count_skew', 'float', '窗口字节数偏度', '1秒时间窗口内字节数的偏度系数', ''),
+    ('window_byte_count_kurt', 'float', '窗口字节数峰度', '1秒时间窗口内字节数的峰度系数', ''),
+    
+    # 速率统计
+    ('avg_bitrate', 'float', '平均比特率', '总字节数*8/流持续时间', '单位：bps'),
+    ('avg_packet_rate', 'float', '平均包速率', '总包数/流持续时间', '单位：包/秒'),
+    ('instant_bitrate_mean', 'float', '瞬时比特率均值', '100ms滑动窗口比特率的平均值', '单位：bps'),
+    ('instant_bitrate_std', 'float', '瞬时比特率标准差', '100ms滑动窗口比特率的标准差', '单位：bps'),
+    ('instant_bitrate_min', 'float', '瞬时比特率最小值', '100ms滑动窗口比特率的最小值', '单位：bps'),
+    ('instant_bitrate_max', 'float', '瞬时比特率最大值', '100ms滑动窗口比特率的最大值', '单位：bps'),
+    ('instant_bitrate_median', 'float', '瞬时比特率中位数', '100ms滑动窗口比特率的中位数', '单位：bps'),
+    ('instant_bitrate_q1', 'float', '瞬时比特率第一四分位数', '100ms滑动窗口比特率的25%分位数', '单位：bps'),
+    ('instant_bitrate_q3', 'float', '瞬时比特率第三四分位数', '100ms滑动窗口比特率的75%分位数', '单位：bps'),
+    ('instant_bitrate_skew', 'float', '瞬时比特率偏度', '100ms滑动窗口比特率的偏度系数', ''),
+    ('instant_bitrate_kurt', 'float', '瞬时比特率峰度', '100ms滑动窗口比特率的峰度系数', ''),
+    ('peak_bitrate', 'float', '峰值比特率', '所有100ms窗口中的最大比特率', '单位：bps'),
+    ('bitrate_percentile_25', 'float', '比特率25%分位数', '比特率的25%分位数值', '单位：bps'),
+    ('bitrate_percentile_50', 'float', '比特率50%分位数', '比特率的50%分位数值', '单位：bps'),
+    ('bitrate_percentile_75', 'float', '比特率75%分位数', '比特率的75%分位数值', '单位：bps'),
+    ('bitrate_percentile_90', 'float', '比特率90%分位数', '比特率的90%分位数值', '单位：bps'),
+    
+    # TCP特定统计
+    ('tcp_syn_count', 'int', 'TCP SYN包数', 'TCP数据包中SYN标志位设置的包数', ''),
+    ('tcp_fin_count', 'int', 'TCP FIN包数', 'TCP数据包中FIN标志位设置的包数', ''),
+    ('tcp_rst_count', 'int', 'TCP RST包数', 'TCP数据包中RST标志位设置的包数', ''),
+    ('tcp_psh_count', 'int', 'TCP PSH包数', 'TCP数据包中PSH标志位设置的包数', ''),
+    ('tcp_ack_count', 'int', 'TCP ACK包数', 'TCP数据包中ACK标志位设置的包数', ''),
+    ('tcp_urg_count', 'int', 'TCP URG包数', 'TCP数据包中URG标志位设置的包数', ''),
+    ('tcp_window_mean', 'float', 'TCP窗口大小均值', 'TCP窗口大小的平均值', ''),
+    ('tcp_window_std', 'float', 'TCP窗口大小标准差', 'TCP窗口大小的标准差', ''),
+    ('tcp_window_min', 'float', 'TCP窗口大小最小值', 'TCP窗口大小的最小值', ''),
+    ('tcp_window_max', 'float', 'TCP窗口大小最大值', 'TCP窗口大小的最大值', ''),
+    ('tcp_window_median', 'float', 'TCP窗口大小中位数', 'TCP窗口大小的中位数', ''),
+    ('tcp_window_q1', 'float', 'TCP窗口大小第一四分位数', 'TCP窗口大小的25%分位数', ''),
+    ('tcp_window_q3', 'float', 'TCP窗口大小第三四分位数', 'TCP窗口大小的75%分位数', ''),
+    ('tcp_window_skew', 'float', 'TCP窗口大小偏度', 'TCP窗口大小的偏度系数', ''),
+    ('tcp_window_kurt', 'float', 'TCP窗口大小峰度', 'TCP窗口大小的峰度系数', ''),
+    ('tcp_syn_packets', 'int', 'TCP SYN包总数', '包含SYN标志位的TCP包总数', ''),
+    ('tcp_syn_ack_packets', 'int', 'TCP SYN-ACK包数', '同时包含SYN和ACK标志位的TCP包数', ''),
+    ('tcp_connection_success_rate', 'float', 'TCP连接成功率', 'SYN-ACK包数/SYN包数', ''),
+    ('tcp_ack_only_count', 'int', 'TCP纯ACK包数', '仅包含ACK标志位的TCP包数', ''),
+    ('tcp_ack_only_ratio', 'float', 'TCP纯ACK包比例', '纯ACK包数/TCP总包数', ''),
+    ('tcp_payload_packets', 'int', 'TCP载荷包数', '包含有效载荷的TCP包数', ''),
+    ('tcp_payload_packet_ratio', 'float', 'TCP载荷包比例', '载荷包数/TCP总包数', ''),
+]
+
+features.extend([('统计特征',) + f for f in statistical_features])
+
+# ========== 序列特征 (SequenceFeatureExtractor) ==========
+sequence_features = [
+    # 包长序列特征
+    ('length_run_mean', 'float', '包长游程均值', '包长符号序列连续相同符号长度的平均值', ''),
+    ('length_run_std', 'float', '包长游程标准差', '包长符号序列连续相同符号长度的标准差', ''),
+    ('length_run_min', 'float', '包长游程最小值', '包长符号序列连续相同符号长度的最小值', ''),
+    ('length_run_max', 'float', '包长游程最大值', '包长符号序列连续相同符号长度的最大值', ''),
+    ('length_run_median', 'float', '包长游程中位数', '包长符号序列连续相同符号长度的中位数', ''),
+    ('length_run_q1', 'float', '包长游程第一四分位数', '包长符号序列连续相同符号长度的25%分位数', ''),
+    ('length_run_q3', 'float', '包长游程第三四分位数', '包长符号序列连续相同符号长度的75%分位数', ''),
+    ('length_run_skew', 'float', '包长游程偏度', '包长符号序列连续相同符号长度的偏度系数', ''),
+    ('length_run_kurt', 'float', '包长游程峰度', '包长符号序列连续相同符号长度的峰度系数', ''),
+    
+    # FFT特征（all, fwd, bwd各5个频率分量索引和幅度，以及9个统计量）
+    ('all_fft_freq_0_idx', 'int', '总体FFT主频索引0', '总体包长序列FFT主要频率分量索引', ''),
+    ('all_fft_mag_0', 'float', '总体FFT主频幅度0', '总体包长序列FFT主要频率分量幅度', ''),
+    ('all_fft_freq_1_idx', 'int', '总体FFT主频索引1', '总体包长序列FFT第二主要频率分量索引', ''),
+    ('all_fft_mag_1', 'float', '总体FFT主频幅度1', '总体包长序列FFT第二主要频率分量幅度', ''),
+    ('all_fft_freq_2_idx', 'int', '总体FFT主频索引2', '总体包长序列FFT第三主要频率分量索引', ''),
+    ('all_fft_mag_2', 'float', '总体FFT主频幅度2', '总体包长序列FFT第三主要频率分量幅度', ''),
+    ('all_fft_freq_3_idx', 'int', '总体FFT主频索引3', '总体包长序列FFT第四主要频率分量索引', ''),
+    ('all_fft_mag_3', 'float', '总体FFT主频幅度3', '总体包长序列FFT第四主要频率分量幅度', ''),
+    ('all_fft_freq_4_idx', 'int', '总体FFT主频索引4', '总体包长序列FFT第五主要频率分量索引', ''),
+    ('all_fft_mag_4', 'float', '总体FFT主频幅度4', '总体包长序列FFT第五主要频率分量幅度', ''),
+    ('all_fft_magnitude_mean', 'float', '总体FFT幅度均值', '总体包长序列FFT幅度的平均值', ''),
+    ('all_fft_magnitude_std', 'float', '总体FFT幅度标准差', '总体包长序列FFT幅度的标准差', ''),
+    ('all_fft_magnitude_min', 'float', '总体FFT幅度最小值', '总体包长序列FFT幅度的最小值', ''),
+    ('all_fft_magnitude_max', 'float', '总体FFT幅度最大值', '总体包长序列FFT幅度的最大值', ''),
+    ('all_fft_magnitude_median', 'float', '总体FFT幅度中位数', '总体包长序列FFT幅度的中位数', ''),
+    ('all_fft_magnitude_q1', 'float', '总体FFT幅度第一四分位数', '总体包长序列FFT幅度的25%分位数', ''),
+    ('all_fft_magnitude_q3', 'float', '总体FFT幅度第三四分位数', '总体包长序列FFT幅度的75%分位数', ''),
+    ('all_fft_magnitude_skew', 'float', '总体FFT幅度偏度', '总体包长序列FFT幅度的偏度系数', ''),
+    ('all_fft_magnitude_kurt', 'float', '总体FFT幅度峰度', '总体包长序列FFT幅度的峰度系数', ''),
+    
+    ('fwd_fft_freq_0_idx', 'int', '前向FFT主频索引0', '前向包长序列FFT主要频率分量索引', ''),
+    ('fwd_fft_mag_0', 'float', '前向FFT主频幅度0', '前向包长序列FFT主要频率分量幅度', ''),
+    ('fwd_fft_freq_1_idx', 'int', '前向FFT主频索引1', '前向包长序列FFT第二主要频率分量索引', ''),
+    ('fwd_fft_mag_1', 'float', '前向FFT主频幅度1', '前向包长序列FFT第二主要频率分量幅度', ''),
+    ('fwd_fft_freq_2_idx', 'int', '前向FFT主频索引2', '前向包长序列FFT第三主要频率分量索引', ''),
+    ('fwd_fft_mag_2', 'float', '前向FFT主频幅度2', '前向包长序列FFT第三主要频率分量幅度', ''),
+    ('fwd_fft_freq_3_idx', 'int', '前向FFT主频索引3', '前向包长序列FFT第四主要频率分量索引', ''),
+    ('fwd_fft_mag_3', 'float', '前向FFT主频幅度3', '前向包长序列FFT第四主要频率分量幅度', ''),
+    ('fwd_fft_freq_4_idx', 'int', '前向FFT主频索引4', '前向包长序列FFT第五主要频率分量索引', ''),
+    ('fwd_fft_mag_4', 'float', '前向FFT主频幅度4', '前向包长序列FFT第五主要频率分量幅度', ''),
+    ('fwd_fft_magnitude_mean', 'float', '前向FFT幅度均值', '前向包长序列FFT幅度的平均值', ''),
+    ('fwd_fft_magnitude_std', 'float', '前向FFT幅度标准差', '前向包长序列FFT幅度的标准差', ''),
+    ('fwd_fft_magnitude_min', 'float', '前向FFT幅度最小值', '前向包长序列FFT幅度的最小值', ''),
+    ('fwd_fft_magnitude_max', 'float', '前向FFT幅度最大值', '前向包长序列FFT幅度的最大值', ''),
+    ('fwd_fft_magnitude_median', 'float', '前向FFT幅度中位数', '前向包长序列FFT幅度的中位数', ''),
+    ('fwd_fft_magnitude_q1', 'float', '前向FFT幅度第一四分位数', '前向包长序列FFT幅度的25%分位数', ''),
+    ('fwd_fft_magnitude_q3', 'float', '前向FFT幅度第三四分位数', '前向包长序列FFT幅度的75%分位数', ''),
+    ('fwd_fft_magnitude_skew', 'float', '前向FFT幅度偏度', '前向包长序列FFT幅度的偏度系数', ''),
+    ('fwd_fft_magnitude_kurt', 'float', '前向FFT幅度峰度', '前向包长序列FFT幅度的峰度系数', ''),
+    
+    ('bwd_fft_freq_0_idx', 'int', '后向FFT主频索引0', '后向包长序列FFT主要频率分量索引', ''),
+    ('bwd_fft_mag_0', 'float', '后向FFT主频幅度0', '后向包长序列FFT主要频率分量幅度', ''),
+    ('bwd_fft_freq_1_idx', 'int', '后向FFT主频索引1', '后向包长序列FFT第二主要频率分量索引', ''),
+    ('bwd_fft_mag_1', 'float', '后向FFT主频幅度1', '后向包长序列FFT第二主要频率分量幅度', ''),
+    ('bwd_fft_freq_2_idx', 'int', '后向FFT主频索引2', '后向包长序列FFT第三主要频率分量索引', ''),
+    ('bwd_fft_mag_2', 'float', '后向FFT主频幅度2', '后向包长序列FFT第三主要频率分量幅度', ''),
+    ('bwd_fft_freq_3_idx', 'int', '后向FFT主频索引3', '后向包长序列FFT第四主要频率分量索引', ''),
+    ('bwd_fft_mag_3', 'float', '后向FFT主频幅度3', '后向包长序列FFT第四主要频率分量幅度', ''),
+    ('bwd_fft_freq_4_idx', 'int', '后向FFT主频索引4', '后向包长序列FFT第五主要频率分量索引', ''),
+    ('bwd_fft_mag_4', 'float', '后向FFT主频幅度4', '后向包长序列FFT第五主要频率分量幅度', ''),
+    ('bwd_fft_magnitude_mean', 'float', '后向FFT幅度均值', '后向包长序列FFT幅度的平均值', ''),
+    ('bwd_fft_magnitude_std', 'float', '后向FFT幅度标准差', '后向包长序列FFT幅度的标准差', ''),
+    ('bwd_fft_magnitude_min', 'float', '后向FFT幅度最小值', '后向包长序列FFT幅度的最小值', ''),
+    ('bwd_fft_magnitude_max', 'float', '后向FFT幅度最大值', '后向包长序列FFT幅度的最大值', ''),
+    ('bwd_fft_magnitude_median', 'float', '后向FFT幅度中位数', '后向包长序列FFT幅度的中位数', ''),
+    ('bwd_fft_magnitude_q1', 'float', '后向FFT幅度第一四分位数', '后向包长序列FFT幅度的25%分位数', ''),
+    ('bwd_fft_magnitude_q3', 'float', '后向FFT幅度第三四分位数', '后向包长序列FFT幅度的75%分位数', ''),
+    ('bwd_fft_magnitude_skew', 'float', '后向FFT幅度偏度', '后向包长序列FFT幅度的偏度系数', ''),
+    ('bwd_fft_magnitude_kurt', 'float', '后向FFT幅度峰度', '后向包长序列FFT幅度的峰度系数', ''),
+    
+    # 自相关特征
+    ('length_autocorr_lag_1', 'float', '包长自相关延迟1', '包长序列延迟1的自相关系数', ''),
+    ('length_autocorr_lag_2', 'float', '包长自相关延迟2', '包长序列延迟2的自相关系数', ''),
+    ('length_autocorr_lag_3', 'float', '包长自相关延迟3', '包长序列延迟3的自相关系数', ''),
+    ('length_autocorr_lag_4', 'float', '包长自相关延迟4', '包长序列延迟4的自相关系数', ''),
+    ('length_autocorr_lag_5', 'float', '包长自相关延迟5', '包长序列延迟5的自相关系数', ''),
+    ('length_sequence_unique_ratio', 'float', '包长序列唯一值比例', '唯一包长数/总包数', ''),
+    ('length_sequence_complexity', 'float', '包长序列复杂度', '包长变化的次数/总包数', ''),
+    
+    # 时间间隔序列特征
+    ('iat_sequence_mean', 'float', 'IAT序列均值', '时间间隔序列的平均值', '单位：秒'),
+    ('iat_sequence_std', 'float', 'IAT序列标准差', '时间间隔序列的标准差', '单位：秒'),
+    ('iat_sequence_min', 'float', 'IAT序列最小值', '时间间隔序列的最小值', '单位：秒'),
+    ('iat_sequence_max', 'float', 'IAT序列最大值', '时间间隔序列的最大值', '单位：秒'),
+    ('iat_sequence_median', 'float', 'IAT序列中位数', '时间间隔序列的中位数', '单位：秒'),
+    ('iat_sequence_q1', 'float', 'IAT序列第一四分位数', '时间间隔序列的25%分位数', '单位：秒'),
+    ('iat_sequence_q3', 'float', 'IAT序列第三四分位数', '时间间隔序列的75%分位数', '单位：秒'),
+    ('iat_sequence_skew', 'float', 'IAT序列偏度', '时间间隔序列的偏度系数', ''),
+    ('iat_sequence_kurt', 'float', 'IAT序列峰度', '时间间隔序列的峰度系数', ''),
+    ('log_iat_sequence_mean', 'float', '对数IAT序列均值', '对数时间间隔序列的平均值', ''),
+    ('log_iat_sequence_std', 'float', '对数IAT序列标准差', '对数时间间隔序列的标准差', ''),
+    ('log_iat_sequence_min', 'float', '对数IAT序列最小值', '对数时间间隔序列的最小值', ''),
+    ('log_iat_sequence_max', 'float', '对数IAT序列最大值', '对数时间间隔序列的最大值', ''),
+    ('log_iat_sequence_median', 'float', '对数IAT序列中位数', '对数时间间隔序列的中位数', ''),
+    ('log_iat_sequence_q1', 'float', '对数IAT序列第一四分位数', '对数时间间隔序列的25%分位数', ''),
+    ('log_iat_sequence_q3', 'float', '对数IAT序列第三四分位数', '对数时间间隔序列的75%分位数', ''),
+    ('log_iat_sequence_skew', 'float', '对数IAT序列偏度', '对数时间间隔序列的偏度系数', ''),
+    ('log_iat_sequence_kurt', 'float', '对数IAT序列峰度', '对数时间间隔序列的峰度系数', ''),
+    ('iat_autocorr_lag_1', 'float', 'IAT自相关延迟1', '时间间隔序列延迟1的自相关系数', ''),
+    ('iat_autocorr_lag_2', 'float', 'IAT自相关延迟2', '时间间隔序列延迟2的自相关系数', ''),
+    ('iat_autocorr_lag_3', 'float', 'IAT自相关延迟3', '时间间隔序列延迟3的自相关系数', ''),
+    ('iat_autocorr_lag_4', 'float', 'IAT自相关延迟4', '时间间隔序列延迟4的自相关系数', ''),
+    ('iat_autocorr_lag_5', 'float', 'IAT自相关延迟5', '时间间隔序列延迟5的自相关系数', ''),
+    ('hurst_exponent_estimate', 'float', 'Hurst指数估计', '基于R/S分析的时间序列Hurst指数', ''),
+    
+    # 方向序列特征
+    ('direction_sequence_entropy', 'float', '方向序列熵', '数据包方向序列的香农熵', ''),
+    ('direction_transition_unique_count', 'int', '方向转移唯一值数', '方向转移序列中唯一值的数量', ''),
+    ('direction_change_frequency', 'float', '方向变化频率', '方向变化的次数/总包数', ''),
+    
+    # 联合序列特征
+    ('length_direction_correlation', 'float', '包长方向相关性', '包长与方向的相关系数', ''),
+    ('length_iat_correlation', 'float', '包长IAT相关性', '包长与时间间隔的相关系数', ''),
+    
+    # 序列建模特征
+    ('top_1_bigram_SS_freq', 'float', 'Top1二元组SS频率', '最常见二元组SS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_SM_freq', 'float', 'Top1二元组SM频率', '最常见二元组SM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_SL_freq', 'float', 'Top1二元组SL频率', '最常见二元组SL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_MS_freq', 'float', 'Top1二元组MS频率', '最常见二元组MS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_MM_freq', 'float', 'Top1二元组MM频率', '最常见二元组MM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_ML_freq', 'float', 'Top1二元组ML频率', '最常见二元组ML的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_LS_freq', 'float', 'Top1二元组LS频率', '最常见二元组LS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_LM_freq', 'float', 'Top1二元组LM频率', '最常见二元组LM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_1_bigram_LL_freq', 'float', 'Top1二元组LL频率', '最常见二元组LL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_SS_freq', 'float', 'Top2二元组SS频率', '第二常见二元组SS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_SM_freq', 'float', 'Top2二元组SM频率', '第二常见二元组SM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_SL_freq', 'float', 'Top2二元组SL频率', '第二常见二元组SL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_MS_freq', 'float', 'Top2二元组MS频率', '第二常见二元组MS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_MM_freq', 'float', 'Top2二元组MM频率', '第二常见二元组MM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_ML_freq', 'float', 'Top2二元组ML频率', '第二常见二元组ML的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_LS_freq', 'float', 'Top2二元组LS频率', '第二常见二元组LS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_LM_freq', 'float', 'Top2二元组LM频率', '第二常见二元组LM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_2_bigram_LL_freq', 'float', 'Top2二元组LL频率', '第二常见二元组LL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_SS_freq', 'float', 'Top3二元组SS频率', '第三常见二元组SS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_SM_freq', 'float', 'Top3二元组SM频率', '第三常见二元组SM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_SL_freq', 'float', 'Top3二元组SL频率', '第三常见二元组SL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_MS_freq', 'float', 'Top3二元组MS频率', '第三常见二元组MS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_MM_freq', 'float', 'Top3二元组MM频率', '第三常见二元组MM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_ML_freq', 'float', 'Top3二元组ML频率', '第三常见二元组ML的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_LS_freq', 'float', 'Top3二元组LS频率', '第三常见二元组LS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_LM_freq', 'float', 'Top3二元组LM频率', '第三常见二元组LM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_3_bigram_LL_freq', 'float', 'Top3二元组LL频率', '第三常见二元组LL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_SS_freq', 'float', 'Top4二元组SS频率', '第四常见二元组SS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_SM_freq', 'float', 'Top4二元组SM频率', '第四常见二元组SM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_SL_freq', 'float', 'Top4二元组SL频率', '第四常见二元组SL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_MS_freq', 'float', 'Top4二元组MS频率', '第四常见二元组MS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_MM_freq', 'float', 'Top4二元组MM频率', '第四常见二元组MM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_ML_freq', 'float', 'Top4二元组ML频率', '第四常见二元组ML的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_LS_freq', 'float', 'Top4二元组LS频率', '第四常见二元组LS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_LM_freq', 'float', 'Top4二元组LM频率', '第四常见二元组LM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_4_bigram_LL_freq', 'float', 'Top4二元组LL频率', '第四常见二元组LL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_SS_freq', 'float', 'Top5二元组SS频率', '第五常见二元组SS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_SM_freq', 'float', 'Top5二元组SM频率', '第五常见二元组SM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_SL_freq', 'float', 'Top5二元组SL频率', '第五常见二元组SL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_MS_freq', 'float', 'Top5二元组MS频率', '第五常见二元组MS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_MM_freq', 'float', 'Top5二元组MM频率', '第五常见二元组MM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_ML_freq', 'float', 'Top5二元组ML频率', '第五常见二元组ML的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_LS_freq', 'float', 'Top5二元组LS频率', '第五常见二元组LS的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_LM_freq', 'float', 'Top5二元组LM频率', '第五常见二元组LM的出现频率', 'S=小包,M=中包,L=大包'),
+    ('top_5_bigram_LL_freq', 'float', 'Top5二元组LL频率', '第五常见二元组LL的出现频率', 'S=小包,M=中包,L=大包'),
+    ('ar_prediction_mse', 'float', 'AR模型预测均方误差', '自回归模型预测包长的均方误差', ''),
+    ('ar_prediction_mae', 'float', 'AR模型预测平均绝对误差', '自回归模型预测包长的平均绝对误差', ''),
+]
+
+features.extend([('序列特征',) + f for f in sequence_features])
+
+# ========== 载荷特征 (PayloadFeatureExtractor) ==========
+payload_features = [
+    # 字节分布与熵
+    ('payload_entropy', 'float', '载荷熵', '载荷字节的香农熵', ''),
+    ('payload_byte_mean', 'float', '载荷字节均值', '载荷字节值的平均值', ''),
+    ('payload_byte_std', 'float', '载荷字节标准差', '载荷字节值的标准差', ''),
+    ('payload_byte_min', 'float', '载荷字节最小值', '载荷字节值的最小值', ''),
+    ('payload_byte_max', 'float', '载荷字节最大值', '载荷字节值的最大值', ''),
+    ('payload_byte_median', 'float', '载荷字节中位数', '载荷字节值的中位数', ''),
+    ('payload_byte_q1', 'float', '载荷字节第一四分位数', '载荷字节值的25%分位数', ''),
+    ('payload_byte_q3', 'float', '载荷字节第三四分位数', '载荷字节值的75%分位数', ''),
+    ('payload_byte_skew', 'float', '载荷字节偏度', '载荷字节值的偏度系数', ''),
+    ('payload_byte_kurt', 'float', '载荷字节峰度', '载荷字节值的峰度系数', ''),
+    ('payload_first_64_entropy', 'float', '前64字节熵', '载荷前64字节的香农熵', ''),
+    ('payload_first_128_entropy', 'float', '前128字节熵', '载荷前128字节的香农熵', ''),
+    ('payload_first_256_entropy', 'float', '前256字节熵', '载荷前256字节的香农熵', ''),
+    ('payload_printable_ratio', 'float', '可打印字符比例', '可打印ASCII字符(32-126)的比例', ''),
+    ('payload_alnum_ratio', 'float', '字母数字比例', '字母数字字符的比例', ''),
+    ('payload_hist_bin_0', 'float', '载荷直方图区间0', '载荷字节值在0-15区间的频率', ''),
+    ('payload_hist_bin_1', 'float', '载荷直方图区间1', '载荷字节值在16-31区间的频率', ''),
+    ('payload_hist_bin_2', 'float', '载荷直方图区间2', '载荷字节值在32-47区间的频率', ''),
+    ('payload_hist_bin_3', 'float', '载荷直方图区间3', '载荷字节值在48-63区间的频率', ''),
+    ('payload_hist_bin_4', 'float', '载荷直方图区间4', '载荷字节值在64-79区间的频率', ''),
+    ('payload_hist_bin_5', 'float', '载荷直方图区间5', '载荷字节值在80-95区间的频率', ''),
+    ('payload_hist_bin_6', 'float', '载荷直方图区间6', '载荷字节值在96-111区间的频率', ''),
+    ('payload_hist_bin_7', 'float', '载荷直方图区间7', '载荷字节值在112-127区间的频率', ''),
+    ('payload_hist_bin_8', 'float', '载荷直方图区间8', '载荷字节值在128-143区间的频率', ''),
+    ('payload_hist_bin_9', 'float', '载荷直方图区间9', '载荷字节值在144-159区间的频率', ''),
+    ('payload_hist_bin_10', 'float', '载荷直方图区间10', '载荷字节值在160-175区间的频率', ''),
+    ('payload_hist_bin_11', 'float', '载荷直方图区间11', '载荷字节值在176-191区间的频率', ''),
+    ('payload_hist_bin_12', 'float', '载荷直方图区间12', '载荷字节值在192-207区间的频率', ''),
+    ('payload_hist_bin_13', 'float', '载荷直方图区间13', '载荷字节值在208-223区间的频率', ''),
+    ('payload_hist_bin_14', 'float', '载荷直方图区间14', '载荷字节值在224-239区间的频率', ''),
+    ('payload_hist_bin_15', 'float', '载荷直方图区间15', '载荷字节值在240-255区间的频率', ''),
+    
+    # 结构特征
+    ('payload_magic_HTTP_GET', 'int', '载荷魔数HTTP_GET', '载荷是否包含HTTP GET请求', '0或1'),
+    ('payload_magic_HTTP_POST', 'int', '载荷魔数HTTP_POST', '载荷是否包含HTTP POST请求', '0或1'),
+    ('payload_magic_TLS_1_0', 'int', '载荷魔数TLS_1_0', '载荷是否包含TLS 1.0标识', '0或1'),
+    ('payload_magic_TLS_1_1', 'int', '载荷魔数TLS_1_1', '载荷是否包含TLS 1.1标识', '0或1'),
+    ('payload_magic_TLS_1_2', 'int', '载荷魔数TLS_1_2', '载荷是否包含TLS 1.2标识', '0或1'),
+    ('payload_magic_TLS_1_3', 'int', '载荷魔数TLS_1_3', '载荷是否包含TLS 1.3标识', '0或1'),
+    ('payload_magic_SSH', 'int', '载荷魔数SSH', '载荷是否包含SSH标识', '0或1'),
+    ('payload_magic_JPEG', 'int', '载荷魔数JPEG', '载荷是否包含JPEG文件头', '0或1'),
+    ('payload_magic_PNG', 'int', '载荷魔数PNG', '载荷是否包含PNG文件头', '0或1'),
+    ('payload_magic_GIF', 'int', '载荷魔数GIF', '载荷是否包含GIF文件头', '0或1'),
+    ('payload_magic_unknown', 'int', '载荷魔数未知', '载荷不包含已知协议标识', '0或1'),
+    ('payload_length_mod_2_mean', 'float', '载荷长度模2均值', '载荷长度对2取模的平均值', ''),
+    ('payload_length_mod_2_std', 'float', '载荷长度模2标准差', '载荷长度对2取模的标准差', ''),
+    ('payload_length_mod_4_mean', 'float', '载荷长度模4均值', '载荷长度对4取模的平均值', ''),
+    ('payload_length_mod_4_std', 'float', '载荷长度模4标准差', '载荷长度对4取模的标准差', ''),
+    ('payload_length_mod_8_mean', 'float', '载荷长度模8均值', '载荷长度对8取模的平均值', ''),
+    ('payload_length_mod_8_std', 'float', '载荷长度模8标准差', '载荷长度对8取模的标准差', ''),
+    ('payload_length_mod_16_mean', 'float', '载荷长度模16均值', '载荷长度对16取模的平均值', ''),
+    ('payload_length_mod_16_std', 'float', '载荷长度模16标准差', '载荷长度对16取模的标准差', ''),
+    ('payload_length_mod_32_mean', 'float', '载荷长度模32均值', '载荷长度对32取模的平均值', ''),
+    ('payload_length_mod_32_std', 'float', '载荷长度模32标准差', '载荷长度对32取模的标准差', ''),
+    ('payload_length_mod_64_mean', 'float', '载荷长度模64均值', '载荷长度对64取模的平均值', ''),
+    ('payload_length_mod_64_std', 'float', '载荷长度模64标准差', '载荷长度对64取模的标准差', ''),
+    ('payload_length_mod_128_mean', 'float', '载荷长度模128均值', '载荷长度对128取模的平均值', ''),
+    ('payload_length_mod_128_std', 'float', '载荷长度模128标准差', '载荷长度对128取模的标准差', ''),
+    ('payload_length_mod_256_mean', 'float', '载荷长度模256均值', '载荷长度对256取模的平均值', ''),
+    ('payload_length_mod_256_std', 'float', '载荷长度模256标准差', '载荷长度对256取模的标准差', ''),
+    ('payload_looks_like_http', 'int', '载荷类似HTTP', '载荷是否看起来像HTTP协议', '0或1'),
+    ('payload_looks_like_json', 'int', '载荷类似JSON', '载荷是否看起来像JSON格式', '0或1'),
+    ('payload_looks_like_xml', 'int', '载荷类似XML', '载荷是否看起来像XML格式', '0或1'),
+    
+    # 加密与压缩特征
+    ('payload_chi_square', 'float', '载荷卡方统计', '载荷字节分布的卡方检验统计量', ''),
+    ('payload_markov_entropy', 'float', '载荷马尔可夫熵', '载荷字节转移的马尔可夫链熵', ''),
+    ('payload_autocorrelation_lag1', 'float', '载荷自相关延迟1', '载荷字节序列延迟1的自相关系数', ''),
+    ('payload_compression_ratio', 'float', '载荷压缩率', 'zlib压缩后大小/原始大小', ''),
+    ('payload_looks_like_tls', 'int', '载荷类似TLS', '载荷是否看起来像TLS协议', '0或1'),
+    ('payload_looks_like_ssh', 'int', '载荷类似SSH', '载荷是否看起来像SSH协议', '0或1'),
+    
+    # 会话载荷聚合特征
+    ('payload_size_mean', 'float', '载荷大小均值', '单个载荷大小的平均值', ''),
+    ('payload_size_std', 'float', '载荷大小标准差', '单个载荷大小的标准差', ''),
+    ('payload_size_min', 'float', '载荷大小最小值', '单个载荷大小的最小值', ''),
+    ('payload_size_max', 'float', '载荷大小最大值', '单个载荷大小的最大值', ''),
+    ('payload_size_median', 'float', '载荷大小中位数', '单个载荷大小的中位数', ''),
+    ('payload_size_q1', 'float', '载荷大小第一四分位数', '单个载荷大小的25%分位数', ''),
+    ('payload_size_q3', 'float', '载荷大小第三四分位数', '单个载荷大小的75%分位数', ''),
+    ('payload_size_skew', 'float', '载荷大小偏度', '单个载荷大小的偏度系数', ''),
+    ('payload_size_kurt', 'float', '载荷大小峰度', '单个载荷大小的峰度系数', ''),
+    ('payload_non_empty_ratio', 'float', '非空载荷比例', '非空载荷数/总载荷数', ''),
+    ('payload_size_diff_mean', 'float', '载荷大小差分均值', '相邻载荷大小差分的平均值', ''),
+    ('payload_size_diff_std', 'float', '载荷大小差分标准差', '相邻载荷大小差分的标准差', ''),
+    ('payload_size_diff_min', 'float', '载荷大小差分最小值', '相邻载荷大小差分的最小值', ''),
+    ('payload_size_diff_max', 'float', '载荷大小差分最大值', '相邻载荷大小差分的最大值', ''),
+    ('payload_size_diff_median', 'float', '载荷大小差分中位数', '相邻载荷大小差分的中位数', ''),
+    ('payload_size_diff_q1', 'float', '载荷大小差分第一四分位数', '相邻载荷大小差分的25%分位数', ''),
+    ('payload_size_diff_q3', 'float', '载荷大小差分第三四分位数', '相邻载荷大小差分的75%分位数', ''),
+    ('payload_size_diff_skew', 'float', '载荷大小差分偏度', '相邻载荷大小差分的偏度系数', ''),
+    ('payload_size_diff_kurt', 'float', '载荷大小差分峰度', '相邻载荷大小差分的峰度系数', ''),
+]
+
+features.extend([('载荷特征',) + f for f in payload_features])
+
+# ========== 协议头部特征 (ProtocolHeaderFeatureExtractor) ==========
+protocol_features = [
+    # 链路层特征
+    ('l2_packets_count', 'int', '链路层包数', '链路层数据包总数', ''),
+    
+    # 网络层特征
+    ('ip_ttl_mean', 'float', 'IP TTL均值', 'IP数据包TTL值的平均值', ''),
+    ('ip_ttl_std', 'float', 'IP TTL标准差', 'IP数据包TTL值的标准差', ''),
+    ('ip_ttl_min', 'float', 'IP TTL最小值', 'IP数据包TTL值的最小值', ''),
+    ('ip_ttl_max', 'float', 'IP TTL最大值', 'IP数据包TTL值的最大值', ''),
+    ('ip_ttl_median', 'float', 'IP TTL中位数', 'IP数据包TTL值的中位数', ''),
+    ('ip_ttl_q1', 'float', 'IP TTL第一四分位数', 'IP数据包TTL值的25%分位数', ''),
+    ('ip_ttl_q3', 'float', 'IP TTL第三四分位数', 'IP数据包TTL值的75%分位数', ''),
+    ('ip_ttl_skew', 'float', 'IP TTL偏度', 'IP数据包TTL值的偏度系数', ''),
+    ('ip_ttl_kurt', 'float', 'IP TTL峰度', 'IP数据包TTL值的峰度系数', ''),
+    ('ip_ttl_eq_32_count', 'int', 'IP TTL等于32的包数', 'TTL值等于32的数据包数量', ''),
+    ('ip_ttl_eq_64_count', 'int', 'IP TTL等于64的包数', 'TTL值等于64的数据包数量', ''),
+    ('ip_ttl_eq_128_count', 'int', 'IP TTL等于128的包数', 'TTL值等于128的数据包数量', ''),
+    ('ip_ttl_eq_255_count', 'int', 'IP TTL等于255的包数', 'TTL值等于255的数据包数量', ''),
+    ('ip_tos_mean', 'float', 'IP TOS均值', 'IP数据包TOS值的平均值', ''),
+    ('ip_tos_std', 'float', 'IP TOS标准差', 'IP数据包TOS值的标准差', ''),
+    ('ip_tos_min', 'float', 'IP TOS最小值', 'IP数据包TOS值的最小值', ''),
+    ('ip_tos_max', 'float', 'IP TOS最大值', 'IP数据包TOS值的最大值', ''),
+    ('ip_tos_median', 'float', 'IP TOS中位数', 'IP数据包TOS值的中位数', ''),
+    ('ip_tos_q1', 'float', 'IP TOS第一四分位数', 'IP数据包TOS值的25%分位数', ''),
+    ('ip_tos_q3', 'float', 'IP TOS第三四分位数', 'IP数据包TOS值的75%分位数', ''),
+    ('ip_tos_skew', 'float', 'IP TOS偏度', 'IP数据包TOS值的偏度系数', ''),
+    ('ip_tos_kurt', 'float', 'IP TOS峰度', 'IP数据包TOS值的峰度系数', ''),
+    ('src_ip_is_private', 'int', '源IP是否私有', '源IP地址是否为私有IP', '0或1'),
+    ('dst_ip_is_private', 'int', '目标IP是否私有', '目标IP地址是否为私有IP', '0或1'),
+    
+    # 传输层特征
+    ('protocol_tcp_ratio', 'float', 'TCP协议比例', 'TCP数据包数/总包数', ''),
+    ('protocol_udp_ratio', 'float', 'UDP协议比例', 'UDP数据包数/总包数', ''),
+    ('protocol_icmp_ratio', 'float', 'ICMP协议比例', 'ICMP数据包数/总包数', ''),
+    ('protocol_other_ratio', 'float', '其他协议比例', '其他协议数据包数/总包数', ''),
+    ('unique_src_ports', 'int', '唯一源端口数', '流中唯一源端口数量', ''),
+    ('unique_dst_ports', 'int', '唯一目标端口数', '流中唯一目标端口数量', ''),
+    ('well_known_src_port_ratio', 'float', '知名源端口比例', '使用知名端口的源端口包数/总包数', ''),
+    ('well_known_dst_port_ratio', 'float', '知名目标端口比例', '使用知名端口的目标端口包数/总包数', ''),
+    ('udp_length_mean', 'float', 'UDP长度均值', 'UDP数据包长度的平均值', ''),
+    ('udp_length_std', 'float', 'UDP长度标准差', 'UDP数据包长度的标准差', ''),
+    ('udp_length_min', 'float', 'UDP长度最小值', 'UDP数据包长度的最小值', ''),
+    ('udp_length_max', 'float', 'UDP长度最大值', 'UDP数据包长度的最大值', ''),
+    ('udp_length_median', 'float', 'UDP长度中位数', 'UDP数据包长度的中位数', ''),
+    ('udp_length_q1', 'float', 'UDP长度第一四分位数', 'UDP数据包长度的25%分位数', ''),
+    ('udp_length_q3', 'float', 'UDP长度第三四分位数', 'UDP数据包长度的75%分位数', ''),
+    ('udp_length_skew', 'float', 'UDP长度偏度', 'UDP数据包长度的偏度系数', ''),
+    ('udp_length_kurt', 'float', 'UDP长度峰度', 'UDP数据包长度的峰度系数', ''),
+    
+    # 应用层特征
+    ('src_port_protocol', 'string', '源端口协议', '基于源端口推断的应用层协议', '如HTTP,HTTPS,DNS等'),
+    ('dst_port_protocol', 'string', '目标端口协议', '基于目标端口推断的应用层协议', '如HTTP,HTTPS,DNS等'),
+    ('is_common_service', 'int', '是否为常见服务', '目标端口是否为常见服务端口', '0或1'),
+    ('src_port_is_ephemeral', 'int', '源端口是否短暂端口', '源端口是否在1024-65535范围', '0或1'),
+    ('dst_port_is_ephemeral', 'int', '目标端口是否短暂端口', '目标端口是否在1024-65535范围', '0或1'),
+    
+    # 头部异常特征
+    ('header_anomaly_count', 'int', '头部异常数', '检测到的头部异常数量', ''),
+    ('tcp_header_anomaly_count', 'int', 'TCP头部异常数', '检测到的TCP头部异常数量', ''),
+    ('header_anomaly_ratio', 'float', '头部异常比例', '头部异常数/总包数', ''),
+]
+
+features.extend([('协议头部特征',) + f for f in protocol_features])
+
+# ========== 行为特征 (BehavioralFeatureExtractor) ==========
+behavioral_features = [
+    # 主机层面行为
+    ('host_as_client_flow_count', 'int', '主机作为客户端流数', '该主机作为客户端的流数量', ''),
+    ('client_dst_ip_diversity', 'int', '客户端目标IP多样性', '客户端连接的不同目标IP数量', ''),
+    ('client_dst_port_diversity', 'int', '客户端目标端口多样性', '客户端连接的不同目标端口数量', ''),
+    ('host_as_server_flow_count', 'int', '主机作为服务器流数', '该主机作为服务器的流数量', ''),
+    ('src_port_range', 'string', '源端口范围', '源端口所属范围类别', 'well_known/registered/dynamic'),
+    
+    # 扫描与探测行为
+    ('tcp_syn_ratio', 'float', 'TCP SYN包比例', 'SYN包数/TCP总包数', ''),
+    ('tcp_syn_only_ratio', 'float', 'TCP纯SYN包比例', '仅SYN标志的包数/TCP总包数', ''),
+    ('tcp_rst_ratio', 'float', 'TCP RST包比例', 'RST包数/TCP总包数', ''),
+    
+    # 通信周期性
+    ('interval_coefficient_of_variation', 'float', '间隔变异系数', '时间间隔标准差/均值', ''),
+    ('interval_ratio_mean', 'float', '间隔比值均值', '相邻时间间隔比值的平均值', ''),
+    ('has_regular_intervals', 'int', '是否有规律间隔', '时间间隔是否规律', '0或1'),
+    ('periodic_dominant_freq_ratio', 'float', '周期性主频比例', 'FFT分析中主频能量占比', ''),
+    ('has_strong_periodicity', 'int', '是否有强周期性', '是否存在强周期性模式', '0或1'),
+    
+    # 会话交互模式
+    ('response_delay_mean', 'float', '响应延迟均值', '请求-响应延迟的平均值', '单位：秒'),
+    ('response_delay_std', 'float', '响应延迟标准差', '请求-响应延迟的标准差', '单位：秒'),
+    ('response_delay_min', 'float', '响应延迟最小值', '请求-响应延迟的最小值', '单位：秒'),
+    ('response_delay_max', 'float', '响应延迟最大值', '请求-响应延迟的最大值', '单位：秒'),
+    ('response_delay_median', 'float', '响应延迟中位数', '请求-响应延迟的中位数', '单位：秒'),
+    ('response_delay_q1', 'float', '响应延迟第一四分位数', '请求-响应延迟的25%分位数', '单位：秒'),
+    ('response_delay_q3', 'float', '响应延迟第三四分位数', '请求-响应延迟的75%分位数', '单位：秒'),
+    ('response_delay_skew', 'float', '响应延迟偏度', '请求-响应延迟的偏度系数', ''),
+    ('response_delay_kurt', 'float', '响应延迟峰度', '请求-响应延迟的峰度系数', ''),
+    ('is_interactive_session', 'int', '是否为交互式会话', '平均响应延迟是否<100ms', '0或1'),
+    ('flow_asymmetry_ratio', 'float', '流不对称比例', '前向字节数/后向字节数', ''),
+    ('flow_pattern', 'string', '流模式', '流的传输模式', 'download_heavy/upload_heavy/balanced/asymmetric'),
+    ('avg_throughput', 'float', '平均吞吐量', '总字节数/流持续时间', '单位：字节/秒'),
+    ('is_bulk_transfer', 'int', '是否为批量传输', '平均吞吐量是否>10KB/s', '0或1'),
+    
+    # 失败与异常行为
+    ('tcp_half_open_ratio', 'float', 'TCP半开连接比例', '未完成三次握手的连接比例', ''),
+    ('tcp_zero_window_count', 'int', 'TCP零窗口包数', 'TCP窗口大小为0的包数', ''),
+    ('icmp_packet_count', 'int', 'ICMP包数', 'ICMP数据包总数', ''),
+]
+
+features.extend([('行为特征',) + f for f in behavioral_features])
+
+# ========== 图特征 (GraphFeatureExtractor) ==========
+graph_features = [
+    # 主机对特征
+    ('host_pair_flow_count', 'int', '主机对流数', '该主机对之间的历史流数量', ''),
+    ('src_ip', 'string', '源IP地址', '流的源IP地址', ''),
+    ('dst_ip', 'string', '目标IP地址', '流的目标IP地址', ''),
+    
+    # 网络图结构特征
+    ('src_out_degree', 'int', '源节点出度', '源IP作为源节点的出边数量', ''),
+    ('src_in_degree', 'int', '源节点入度', '源IP作为目标节点的入边数量', ''),
+    ('src_total_degree', 'int', '源节点总度', '源IP的总连接度', ''),
+    ('dst_out_degree', 'int', '目标节点出度', '目标IP作为源节点的出边数量', ''),
+    ('dst_in_degree', 'int', '目标节点入度', '目标IP作为目标节点的入边数量', ''),
+    ('dst_total_degree', 'int', '目标节点总度', '目标IP的总连接度', ''),
+    ('edge_weight', 'int', '边权重', '该主机对之间的流数量', ''),
+    ('src_degree_centrality', 'float', '源节点度中心性', '源IP在图中的度中心性', ''),
+    ('dst_degree_centrality', 'float', '目标节点度中心性', '目标IP在图中的度中心性', ''),
+    ('src_clustering_coefficient', 'float', '源节点聚类系数', '源IP的聚类系数', ''),
+    ('dst_clustering_coefficient', 'float', '目标节点聚类系数', '目标IP的聚类系数', ''),
+    
+    # 横向关联特征
+    ('other_hosts_to_dst_count', 'int', '其他主机到目标数', '连接到同一目标的其他主机数量', ''),
+    ('src_to_other_hosts_count', 'int', '源到其他主机数', '源主机连接的其他主机数量', ''),
+    ('possible_p2p_client', 'int', '可能P2P客户端', '是否可能是P2P客户端节点', '0或1'),
+    
+    # 时间关联特征
+    ('synchronized_flows_count', 'int', '同步流数', '在1秒内同时开始的其他流数量', ''),
+]
+
+features.extend([('图特征',) + f for f in graph_features])
+
+# ========== 其他特征 ==========
+other_features = [
+    ('flow_key', 'string', '流键', '流的五元组标识', ''),
+    ('packet_count', 'int', '数据包数', '流中的数据包总数', ''),
+]
+
+features.extend([('其他特征',) + f for f in other_features])
+
+# 写入CSV文件
+output_file = 'network_flow_features_description.csv'
+
+with open(output_file, 'w', newline='', encoding='utf-8-sig') as f:
+    writer = csv.writer(f)
+    # 写入表头
+    writer.writerow(['特征分类', '特征字段名', '字段类型', '字段含义', '字段示意', '备注'])
+    
+    # 写入特征数据
+    for feature in features:
+        writer.writerow(feature)
+
+print(f"特征描述文件已生成: {output_file}")
+print(f"总共包含 {len(features)} 个特征")
